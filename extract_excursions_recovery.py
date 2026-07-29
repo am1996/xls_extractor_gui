@@ -1,138 +1,131 @@
 import os
-import glob
 import pandas as pd
-
-
-def _process_file(
-    filepath,
-    challenge_start, challenge_end, allowed_recovery,
-    channel, temp_min, temp_max, rh_min, rh_max,
-    header_row, date_col, temp_col, rh_col
-):
-    logger_number = os.path.splitext(os.path.basename(filepath))[0].replace(".", "")
-
-    df = pd.read_excel(filepath, header=header_row)
-    df = df.iloc[:, 1:4].copy()
-    df.columns = [date_col, temp_col, rh_col]
-    df = df.dropna()
-    df[date_col] = pd.to_datetime(df[date_col], format="%m/%d/%Y %I:%M:%S %p", errors="coerce")
-    df = df.dropna(subset=[date_col]).reset_index(drop=True)
-    df = df[(df[date_col] >= challenge_start) & (df[date_col] <= challenge_end)].reset_index(drop=True)
-
-    if df.empty:
-        return []
-
-    def extract(df, col, low, high):
-        in_excursion = (df[col] < low) | (df[col] > high)
-        records = []
-        i = 0
-        while i < len(df):
-            if in_excursion.iloc[i]:
-                start_time = df[date_col].iloc[i]
-                start_val  = df[col].iloc[i]
-                direction  = "HIGH" if df[col].iloc[i] > high else "LOW"
-                j = i + 1
-                while j < len(df) and in_excursion.iloc[j]:
-                    j += 1
-                end_idx          = j - 1
-                excursion_end    = df[date_col].iloc[end_idx]
-                if j < len(df):
-                    recovery_time = df[date_col].iloc[j]
-                    recovered     = True
-                    duration      = recovery_time - start_time
-                else:
-                    recovery_time = pd.NaT
-                    recovered     = False
-                    duration      = excursion_end - start_time
-                within_allowed = (duration <= allowed_recovery) if recovered else False
-                records.append({
-                    "Direction": direction,
-                    "Excursion Start": start_time,
-                    "Excursion End": excursion_end,
-                    "Start Value": round(start_val, 2),
-                    "Recovered": recovered,
-                    "Recovery Time": recovery_time,
-                    "Recovery Duration": duration,
-                    "Within Allowed Recovery": within_allowed
-                })
-                i = j
-            else:
-                i += 1
-        return records
-
-    records = []
-    if channel in ("temp", "temp_and_rh"):
-        for r in extract(df, temp_col, temp_min, temp_max):
-            records.append({"Logger": logger_number, "Parameter": "Temperature", **r})
-    if channel in ("rh", "temp_and_rh"):
-        for r in extract(df, rh_col, rh_min, rh_max):
-            records.append({"Logger": logger_number, "Parameter": "RH", **r})
-    return records
-
+from datetime import datetime, timedelta
 
 def analyze_excursions(
-    directory,
-    challenge_start,
-    challenge_end,
-    allowed_recovery,
-    channel="temp_and_rh",
-    temp_min=None, temp_max=None,
-    rh_min=None, rh_max=None,
-    header_row=11,
-    date_col=1,
-    temp_col=2,
-    rh_col=3
+    directory: str,
+    time_col_idx: int,
+    val_col_idx: int,
+    min_val: float,
+    max_val: float,
+    challenge_start: str,
+    challenge_end: str,
+    recovery_time_minutes: float
 ):
     """
-    directory        : path to folder containing excel files (.xls / .xlsx)
-    channel          : 'temp' | 'rh' | 'temp_and_rh'
-    challenge_start  : str  e.g. '2026-07-16 04:24:51 PM'
-    challenge_end    : str  e.g. '2026-07-26 03:34:51 PM'
-    allowed_recovery : int  minutes e.g. 30
+    Scans Excel/CSV files for temperature excursions, records reading values
+    at the start and end of each excursion, and calculates recovery times.
     """
-    challenge_start  = pd.to_datetime(challenge_start, format="%Y-%m-%d %I:%M:%S %p")
-    challenge_end    = pd.to_datetime(challenge_end,   format="%Y-%m-%d %I:%M:%S %p")
-    allowed_recovery = pd.Timedelta(minutes=allowed_recovery)
-    channel          = channel.lower().strip()
-
-    files = glob.glob(os.path.join(directory, "*.xls")) + \
-            glob.glob(os.path.join(directory, "*.xlsx"))
-
-    if not files:
-        print("No Excel files found in directory.")
-        return pd.DataFrame()
-
-    all_records = []
-    for filepath in files:
+    
+    start_time = pd.to_datetime(challenge_start)
+    end_time = pd.to_datetime(challenge_end)
+    recovery_limit = pd.Timedelta(minutes=recovery_time_minutes)
+    
+    # Extend monitoring window to assess post-challenge recovery
+    max_monitoring_time = end_time + recovery_limit
+    
+    valid_extensions = ('.csv', '.xls', '.xlsx')
+    all_results = []
+    dt_format = '%m/%d/%Y %I:%M:%S %p' 
+    
+    for filename in os.listdir(directory):
+        if not filename.lower().endswith(valid_extensions):
+            continue
+            
+        filepath = os.path.join(directory, filename)
+        
         try:
-            all_records.extend(_process_file(
-                filepath, challenge_start, challenge_end, allowed_recovery,
-                channel, temp_min, temp_max, rh_min, rh_max,
-                header_row, date_col, temp_col, rh_col
-            ))
+            if filename.lower().endswith('.csv'):
+                df = pd.read_csv(filepath)
+            else:
+                df = pd.read_excel(filepath)
+                
+            time_col_name = df.columns[time_col_idx]
+            val_col_name = df.columns[val_col_idx]
+            
+            # Parse dates and numerical data
+            df[time_col_name] = pd.to_datetime(df[time_col_name], errors='coerce', format='mixed')
+            df[val_col_name] = pd.to_numeric(df[val_col_name], errors='coerce')
+            df = df.dropna(subset=[time_col_name, val_col_name])
+            
+            # Filter data to the monitoring window
+            mask = (df[time_col_name] >= start_time) & (df[time_col_name] <= max_monitoring_time)
+            analysis_df = df.loc[mask].sort_values(by=time_col_name)
+            
+            in_excursion = False
+            excursion_start = None
+            excursion_start_val = None
+            excursion_count = 0
+            
+            for _, row in analysis_df.iterrows():
+                current_time = row[time_col_name]
+                current_val = row[val_col_name]
+                
+                is_out_of_bounds = (current_val < min_val) or (current_val > max_val)
+                
+                if not in_excursion:
+                    # Record start of a new excursion within the challenge window
+                    if is_out_of_bounds and (current_time <= end_time):
+                        in_excursion = True
+                        excursion_start = current_time
+                        excursion_start_val = current_val
+                        excursion_count += 1
+                        
+                elif in_excursion and not is_out_of_bounds:
+                    # Record end of excursion (first reading back in bounds)
+                    in_excursion = False
+                    recovery_duration = current_time - excursion_start
+                    recovery_mins = round(recovery_duration.total_seconds() / 60.0, 2)
+                    recovered_in_time = recovery_duration <= recovery_limit
+                    
+                    all_results.append({
+                        "File": filename,
+                        "Excursion #": excursion_count,
+                        "Excursion Start": excursion_start.strftime(dt_format),
+                        "Start Reading": excursion_start_val,
+                        "Excursion End": current_time.strftime(dt_format),
+                        "End Reading": current_val,
+                        "Time to Recover (Minutes)": recovery_mins,
+                        "Time to Recover (Formatted)": str(recovery_duration),
+                        "Pass/Fail": "PASS" if recovered_in_time else "FAIL (Exceeded Limit)"
+                    })
+                    
+            # Handle excursions that never recovered within the allowed time
+            if in_excursion:
+                all_results.append({
+                    "File": filename,
+                    "Excursion #": excursion_count,
+                    "Excursion Start": excursion_start.strftime(dt_format),
+                    "Start Reading": excursion_start_val,
+                    "Excursion End": "N/A",
+                    "End Reading": "N/A",
+                    "Time to Recover (Minutes)": "Did not recover",
+                    "Time to Recover (Formatted)": "N/A",
+                    "Pass/Fail": f"FAIL (Did not recover in {recovery_time_minutes} mins)"
+                })
+                
         except Exception as e:
-            print(f"Skipping {os.path.basename(filepath)}: {e}")
+            print(f"Error processing {filename}: {e}")
 
-    pd.set_option("display.max_columns", None)
-    pd.set_option("display.width", None)
+    results_df = pd.DataFrame(all_results)
+    
+    print(f"\n--- Analysis Complete. Found {len(all_results)} total excursion events ---")
+    if not results_df.empty:
+        pd.set_option('display.max_columns', None)
+        pd.set_option('display.width', 1000)
+        print(results_df.to_string(index=False))
+        
+    return results_df
 
-    out = pd.DataFrame(all_records).sort_values(["Logger", "Excursion Start"]).reset_index(drop=True)
-
-    fmt = "%Y-%m-%d %I:%M:%S %p"
-    for col in ["Excursion Start", "Excursion End", "Recovery Time"]:
-        out[col] = out[col].apply(lambda x: x.strftime(fmt) if pd.notna(x) else "N/A")
-
-    print(out.to_string() if not out.empty else "No excursions found.")
-    return out
-
-
+# --- Example Usage ---
 if __name__ == "__main__":
-    analyze_excursions(
-        directory=r"g:\work\Thermal Mapping\4027\5th_try",
-        challenge_start="2026-07-16 04:24:51 PM",
-        challenge_end="2026-07-26 03:34:51 PM",
-        allowed_recovery=30,
-        channel="temp_and_rh",
-        temp_min=30, temp_max=35,
-        rh_min=35, rh_max=65
+    results_df = analyze_excursions(
+        directory="U:\\Qualification\\Drive\\Thermal_Mapping\\QC01\\4027\\5th_try\\Empty study\\xls", 
+        time_col_idx=1,            # 1 = Date/time column
+        val_col_idx=2,             # 2 = Temperature column
+        min_val=30.0, 
+        max_val=35.0, 
+        challenge_start="7/26/2026 10:00:00 AM", 
+        challenge_end="7/26/2026 10:15:00 AM",   
+        recovery_time_minutes=60.0 
     )
