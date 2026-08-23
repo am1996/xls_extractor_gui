@@ -1,3 +1,4 @@
+import math
 import os
 import glob
 from pathlib import Path
@@ -5,122 +6,89 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import numpy as np
 import pandas as pd
-from datetime import datetime
-
+from datetime import datetime,timedelta
+import dateutil
 #------------------ Excursion Recovery Logic ------------------
-def _process_file(
-    filepath,
-    challenge_start, challenge_end, allowed_recovery,
-    channel, temp_min, temp_max, rh_min, rh_max,
-    header_row, date_col, temp_col, rh_col
+def analyze_excursions_df(
+    df,
+    time_col_idx: int,
+    val_col_idx: int,
+    min_val: float,
+    max_val: float,
+    challenge_start: str,
+    challenge_end: str,
+    recovery_time_minutes: float,
+    filename: str
 ):
-    logger_number = os.path.splitext(os.path.basename(filepath))[0].replace(".", "")
+    all_results = []
+    dt_format = '%d-%m-%Y %I:%M:%S %p'
+    start_time = pd.to_datetime(challenge_start)
+    end_time = pd.to_datetime(challenge_end)
+    recovery_limit = pd.Timedelta(minutes=recovery_time_minutes)
 
-    df = pd.read_excel(filepath, header=header_row)
-    df = df.iloc[:, 1:4].copy()
-    df.columns = [date_col, temp_col, rh_col]
-    df = df.dropna()
-    df[date_col] = pd.to_datetime(df[date_col], format="%m/%d/%Y %I:%M:%S %p", errors="coerce")
-    df = df.dropna(subset=[date_col]).reset_index(drop=True)
-    df = df[(df[date_col] >= challenge_start) & (df[date_col] <= challenge_end)].reset_index(drop=True)
+    # Extend monitoring window to assess post-challenge recovery
+    max_monitoring_time = end_time + recovery_limit
 
-    if df.empty:
-        return []
-
-    def extract(df, col, low, high):
-        in_excursion = (df[col] < low) | (df[col] > high)
-        records = []
-        i = 0
-        while i < len(df):
-            if in_excursion.iloc[i]:
-                start_time = df[date_col].iloc[i]
-                start_val  = df[col].iloc[i]
-                direction  = "HIGH" if df[col].iloc[i] > high else "LOW"
-                j = i + 1
-                while j < len(df) and in_excursion.iloc[j]:
-                    j += 1
-                end_idx          = j - 1
-                excursion_end    = df[date_col].iloc[end_idx]
-                if j < len(df):
-                    recovery_time = df[date_col].iloc[j]
-                    recovered     = True
-                    duration      = recovery_time - start_time
-                else:
-                    recovery_time = pd.NaT
-                    recovered     = False
-                    duration      = excursion_end - start_time
-                within_allowed = (duration <= allowed_recovery) if recovered else False
-                records.append({
-                    "Direction": direction,
-                    "Excursion Start": start_time,
-                    "Excursion End": excursion_end,
-                    "Start Value": round(start_val, 2),
-                    "Recovered": recovered,
-                    "Recovery Time": recovery_time,
-                    "Recovery Duration": duration,
-                    "Within Allowed Recovery": within_allowed
-                })
-                i = j
-            else:
-                i += 1
-        return records
-
-def analyze_excursions(
-    directory,
-    challenge_start,
-    challenge_end,
-    allowed_recovery,
-    channel="temp_and_rh",
-    temp_min=None, temp_max=None,
-    rh_min=None, rh_max=None,
-    header_row=11,
-    date_col=1,
-    temp_col=2,
-    rh_col=3
-):
-    """
-    directory        : path to folder containing excel files (.xls / .xlsx)
-    channel          : 'temp' | 'rh' | 'temp_and_rh'
-    challenge_start  : str  e.g. '2026-07-16 04:24:51 PM'
-    challenge_end    : str  e.g. '2026-07-26 03:34:51 PM'
-    allowed_recovery : int  minutes e.g. 30
-    """
-    challenge_start  = pd.to_datetime(challenge_start, format="%Y-%m-%d %I:%M:%S %p")
-    challenge_end    = pd.to_datetime(challenge_end,   format="%Y-%m-%d %I:%M:%S %p")
-    allowed_recovery = pd.Timedelta(minutes=allowed_recovery)
-    channel          = channel.lower().strip()
-
-    files = glob.glob(os.path.join(directory, "*.xls")) + \
-            glob.glob(os.path.join(directory, "*.xlsx"))
-
-    if not files:
-        print("No Excel files found in directory.")
-        return pd.DataFrame()
-
-    all_records = []
-    for filepath in files:
-        try:
-            all_records.extend(_process_file(
-                filepath, challenge_start, challenge_end, allowed_recovery,
-                channel, temp_min, temp_max, rh_min, rh_max,
-                header_row, date_col, temp_col, rh_col
-            ))
-        except Exception as e:
-            print(f"Skipping {os.path.basename(filepath)}: {e}")
-
-    pd.set_option("display.max_columns", None)
-    pd.set_option("display.width", None)
-
-    out = pd.DataFrame(all_records).sort_values(["Logger", "Excursion Start"]).reset_index(drop=True)
-
-    fmt = "%Y-%m-%d %I:%M:%S %p"
-    for col in ["Excursion Start", "Excursion End", "Recovery Time"]:
-        out[col] = out[col].apply(lambda x: x.strftime(fmt) if pd.notna(x) else "N/A")
-
-    print(out.to_string() if not out.empty else "No excursions found.")
-    return out
+    time_col_name = df.columns[time_col_idx]
+    val_col_name = df.columns[val_col_idx]
+    filename = filename.replace('.csv', '').replace('.xls', '').replace('.xlsx', '').replace('.csv,', '').replace('.','')
+    # Parse dates and numerical data
+    df.iloc[:, time_col_idx] = pd.to_datetime(df.iloc[:, time_col_idx], errors='coerce', format='mixed')
+    df.iloc[:, val_col_idx] = pd.to_numeric(df.iloc[:, val_col_idx], errors='coerce')
+    df = df.iloc[df.iloc[:, [time_col_idx, val_col_idx]].notna().all(axis=1).values]
+    
+    # Filter data to the monitoring window
+    mask = (df.iloc[:, time_col_idx] >= start_time) & (df.iloc[:, time_col_idx] <= max_monitoring_time)
+    analysis_df = df.loc[mask].sort_values(by=time_col_idx)
+    
+    in_excursion = False
+    excursion_start = None
+    excursion_start_val = None
+    excursion_count = 0
+    
+    for _, row in analysis_df.iterrows():
+        current_time = row[time_col_name]
+        current_val = row[val_col_name]
+        
+        is_out_of_bounds = (current_val < min_val) or (current_val > max_val)
+        
+        if not in_excursion:
+            # Record start of a new excursion within the challenge window
+            if is_out_of_bounds and (current_time <= end_time):
+                in_excursion = True
+                excursion_start = current_time
+                excursion_start_val = current_val
+                excursion_count += 1
+                
+        elif in_excursion and not is_out_of_bounds:
+            # Record end of excursion (first reading back in bounds)
+            in_excursion = False
+            recovery_duration = current_time - excursion_start
+            recovery_mins = math.round(recovery_duration.total_seconds() / 60.0, 2)
+            recovered_in_time = recovery_duration <= recovery_limit
+            
+            all_results.append({
+                "File": filename,
+                "Excursion #": excursion_count,
+                "Excursion Start": excursion_start.strftime(dt_format),
+                "Start Reading": excursion_start_val,
+                "Excursion End": current_time.strftime(dt_format),
+                "End Reading": current_val,
+                "Time to Recover (Minutes)": recovery_mins,
+                "Time to Recover (Formatted)": str(recovery_duration),
+                "Pass/Fail": "PASS" if recovered_in_time else "FAIL (Exceeded Limit)"
+            })
+    return pd.DataFrame(all_results)
 
 # ------------------ Core Processing Logic ------------------
+def parse_safe(date_val):
+    if date_val is None or not str(date_val).strip():
+        return None
+    try:
+        return dateutil.parser.parse(str(date_val))
+    except (dateutil.parser.ParserError, TypeError, ValueError):
+        return None
+
 def calc_mkt(temps):
     if len(temps) == 0:
         return np.nan
@@ -137,34 +105,27 @@ def load_file(file_path, rows_to_skip):
 
 
 def extract_min_max_avg(
-    file_path,
+    df,
     start_date,
     end_date,
     date_mode="Single Column",
     date_index=1,
     time_index=None,
-    rows_to_skip=11,
     temp_idx=2,
     rh_idx=3,
     has_rh=True,
 ):
 
-    df = load_file(file_path, rows_to_skip)
-
     # Handle Date/Time Parsing based on chosen structure
     try:
         if date_mode == "Separated Columns" and time_index is not None:
-            df["Date/time"] = pd.to_datetime(
-                df.iloc[:, date_index].astype(str) + " " + df.iloc[:, time_index].astype(str),
-                format="%m/%d/%Y %I:%M:%S %p",
-                errors='coerce'
-            )
+            # Combine strings
+            combined = df.iloc[:, date_index].astype(str) + " " + df.iloc[:, time_index].astype(str)
+
+            # Parse using dateutil's flexible parser
+            df['Date/time'] = combined.apply(lambda x: dateutil.parser.parse(x) if pd.notna(x) else pd.NaT)
         else:
-            df["Date/time"] = pd.to_datetime(
-                df.iloc[:, date_index], 
-                format="%m/%d/%Y %I:%M:%S %p",
-                errors='coerce'
-            )
+            df["Date/time"] = df.iloc[:, date_index].apply(lambda x: dateutil.parser.parse(str(x)) if pd.notna(x) else pd.NaT)
     except Exception as e:
         raise ValueError(f"Failed to parse Date/Time columns. Check your indexes. Error: {str(e)}")
 
@@ -427,14 +388,14 @@ class DataloggerApp:
         ttk.Label(
             ac_temp_frame, text="Temp LCL:"
         ).grid(row=0, column=0, sticky=tk.W, pady=8)
-        self.lcl_temp = tk.StringVar(value="")
+        self.lcl_temp = tk.StringVar(value="18")
         ttk.Entry(ac_temp_frame, textvariable=self.lcl_temp, width=10).grid(
             row=0, column=1, sticky=tk.W, padx=5
         )
         ttk.Label(
             ac_temp_frame, text="Temp UCL:"
         ).grid(row=0, column=3, sticky=tk.W, pady=8)
-        self.ucl_temp = tk.StringVar(value="")
+        self.ucl_temp = tk.StringVar(value="25")
         ttk.Entry(ac_temp_frame, textvariable=self.ucl_temp, width=10).grid(
             row=0, column=4, sticky=tk.W, padx=5
         )
@@ -444,13 +405,13 @@ class DataloggerApp:
         ttk.Label(
             ac_rh_frame, text="Humidity LCL:"
         ).grid(row=0, column=0, sticky=tk.W, pady=8)
-        self.lcl_rh = tk.StringVar(value="")
+        self.lcl_rh = tk.StringVar(value="60")
         self.lcl_rh_entry = ttk.Entry(ac_rh_frame, textvariable=self.lcl_rh, width=10)
         self.lcl_rh_entry.grid(row=0, column=1, sticky=tk.W, padx=5)
         ttk.Label(
             ac_rh_frame, text="Humidity UCL:"
         ).grid(row=0, column=3, sticky=tk.W, pady=8)
-        self.ucl_rh = tk.StringVar(value="")
+        self.ucl_rh = tk.StringVar(value="70")
         self.ucl_rh_entry = ttk.Entry(ac_rh_frame, textvariable=self.ucl_rh, width=10)
         self.ucl_rh_entry.grid(
             row=0, column=4, sticky=tk.W, padx=5
@@ -628,108 +589,212 @@ class DataloggerApp:
         self.status_var.set("Processing files... Please wait.")
         self.root.update_idletasks()
 
-        try:
-            cols = [
-                "Datalogger",
-                "Min Temp [°C]",
-                "Max Temp [°C]",
-                "Avg Temp [°C]",
-                "MKT",
-                "RH Min [%]",
-                "RH Max [%]",
-                "RH Avg [%]",
+        cols = [
+            "Datalogger",
+            "Min Temp [°C]",
+            "Max Temp [°C]",
+            "Avg Temp [°C]",
+            "MKT",
+            "RH Min [%]",
+            "RH Max [%]",
+            "RH Avg [%]",
+        ]
+        main_study_frame = pd.DataFrame(columns=cols)
+        od_frame = pd.DataFrame(columns=cols)
+        pf_frame = pd.DataFrame(columns=cols)
+        for f in files:
+            df = load_file(f, rows_to_skip)
+            ms_data_min, ms_data_max, ms_data_avg, ms_data_mkt, ms_rh_min, ms_rh_max, ms_rh_avg = (
+                extract_min_max_avg(
+                    df,
+                    start_date,
+                    end_date,
+                    date_mode=date_mode,
+                    date_index=date_idx,
+                    time_index=time_idx,
+                    temp_idx=temp_idx,
+                    rh_idx=rh_idx,
+                    has_rh=has_rh,
+                )
+            )
+            new_row_ms = pd.DataFrame(
+                {
+                    "Datalogger": Path(f).stem,
+                    "Min Temp [°C]": ms_data_min,
+                    "Max Temp [°C]": ms_data_max,
+                    "Avg Temp [°C]": ms_data_avg,
+                    "MKT": ms_data_mkt,
+                    "RH Min [%]": ms_rh_min,
+                    "RH Max [%]": ms_rh_max,
+                    "RH Avg [%]": ms_rh_avg,
+                },
+                index=[0],
+            )
+            main_study_frame = pd.concat([main_study_frame, new_row_ms], ignore_index=True)
+            valid_dates = [
+                parse_safe(self.od_end_var.get()),
+                parse_safe(self.pf_end_var.get()),
+                parse_safe(end_date),
             ]
-            min_max_data_frame = pd.DataFrame(columns=cols)
+            end_study_date = max([d for d in valid_dates if d is not None]) + timedelta(minutes=int(self.recovery_pf.get()) if self.pf_enabled_var.get() else 60)
             if self.od_enabled_var.get():
-                od_frame = analyze_excursions(
-                    folder,
-                    self.od_start_var.get(),
-                    self.od_end_var.get(),
-                    int(self.recovery_od.get()),
-                    channel="temp_and_rh",
-                    temp_min=float(self.lcl_temp.get()) if self.lcl_temp.get() else None,
-                    temp_max=float(self.ucl_temp.get()) if self.ucl_temp.get() else None,
-                    rh_min=float(self.lcl_rh.get()) if self.lcl_rh.get() else None,
-                    rh_max=float(self.ucl_rh.get()) if self.ucl_rh.get() else None,
-                )
-            if self.pf_enabled_var.get():
-                pf_frame = analyze_excursions(
-                    folder,
-                    self.pf_start_var.get(),
-                    self.pf_end_var.get(),
-                    int(self.recovery_pf.get()),
-                    channel="temp_and_rh",
-                    temp_min=float(self.lcl_temp.get()) if self.lcl_temp.get() else None,
-                    temp_max=float(self.ucl_temp.get()) if self.ucl_temp.get() else None,
-                    rh_min=float(self.lcl_rh.get()) if self.lcl_rh.get() else None,
-                    rh_max=float(self.ucl_rh.get()) if self.ucl_rh.get() else None,
-                )
-            for f in files:
-                data_min, data_max, data_avg, data_mkt, rh_min, rh_max, rh_avg = (
+                od_data_min, od_data_max, od_data_avg, od_data_mkt, od_rh_min, od_rh_max, od_rh_avg = (
                     extract_min_max_avg(
-                        f,
-                        start_date,
-                        end_date,
+                        df,
+                        self.od_start_var.get(),
+                        self.od_end_var.get(),
                         date_mode=date_mode,
                         date_index=date_idx,
                         time_index=time_idx,
-                        rows_to_skip=rows_to_skip,
                         temp_idx=temp_idx,
                         rh_idx=rh_idx,
                         has_rh=has_rh,
                     )
                 )
-
-                new_row = pd.DataFrame(
+                new_row_od = pd.DataFrame(
                     {
                         "Datalogger": Path(f).stem,
-                        "Min Temp [°C]": data_min,
-                        "Max Temp [°C]": data_max,
-                        "Avg Temp [°C]": data_avg,
-                        "MKT": data_mkt,
-                        "RH Min [%]": rh_min,
-                        "RH Max [%]": rh_max,
-                        "RH Avg [%]": rh_avg,
+                        "Min Temp [°C]": od_data_min,
+                        "Max Temp [°C]": od_data_max,
+                        "Avg Temp [°C]": od_data_avg,
+                        "MKT": od_data_mkt,
+                        "RH Min [%]": od_rh_min,
+                        "RH Max [%]": od_rh_max,
+                        "RH Avg [%]": od_rh_avg,
                     },
                     index=[0],
                 )
-                min_max_data_frame = pd.concat([min_max_data_frame, new_row], ignore_index=True)
+                od_frame = pd.concat([od_frame, new_row_od], ignore_index=True)
+            if self.pf_enabled_var.get():
+                print(type(int(self.recovery_pf.get())))
+                
+                pf_data_min, pf_data_max, pf_data_avg, pf_data_mkt, pf_rh_min, pf_rh_max, pf_rh_avg = (
+                    extract_min_max_avg(
+                        df,
+                        self.pf_start_var.get(),
+                        self.pf_end_var.get(),
+                        date_mode=date_mode,
+                        date_index=date_idx,
+                        time_index=time_idx,
+                        temp_idx=temp_idx,
+                        rh_idx=rh_idx,
+                        has_rh=has_rh,
+                    )
+                )
+                new_row_pf = pd.DataFrame(
+                    {
+                        "Datalogger": Path(f).stem,
+                        "Min Temp [°C]": pf_data_min,
+                        "Max Temp [°C]": pf_data_max,
+                        "Avg Temp [°C]": pf_data_avg,
+                        "MKT": pf_data_mkt,
+                        "RH Min [%]": pf_rh_min,
+                        "RH Max [%]": pf_rh_max,
+                        "RH Avg [%]": pf_rh_avg,
+                    },
+                    index=[0],
+                )
+                pf_frame = pd.concat([pf_frame, new_row_pf], ignore_index=True)
+                if self.lcl_temp.get() is None:
+                    messagebox.showerror("Error", "Please enter a valid LCL temperature for Power Failure Challenge Test.")
+                if self.ucl_temp.get() is None:
+                    messagebox.showerror("Error", "Please enter a valid UCL temperature for Power Failure Challenge Test.")
+                excursions_temp = analyze_excursions_df(
+                    df,
+                    time_idx,
+                    temp_idx,
+                    int(self.lcl_temp.get()),
+                    int(self.ucl_temp.get()),
+                    str(start_date),
+                    str(end_study_date),
+                    int(self.recovery_pf.get()) if self.pf_enabled_var.get() else 60,
+                    filename=Path(f).stem
+                )
+                temp_excursions = pd.concat([temp_excursions, excursions_temp], ignore_index=True)
+                if self.has_rh_var.get():
+                    if self.lcl_rh.get() is None:
+                        messagebox.showerror("Error", "Please enter a valid LCL humidity for Power Failure Challenge Test.")
+                    if self.ucl_rh.get() is None:
+                        messagebox.showerror("Error", "Please enter a valid UCL humidity for Power Failure Challenge Test.")
+                    excursions_rh = analyze_excursions_df(
+                        df,
+                        time_idx,
+                        rh_idx,
+                        int(self.lcl_rh.get()),
+                        int(self.ucl_rh.get()),
+                        str(start_date),
+                        str(end_study_date),
+                        int(self.recovery_pf.get()) if self.pf_enabled_var.get() else 60,
+                        filename=Path(f).stem
+                    )
+                    rh_excursions = pd.concat([rh_excursions, excursions_rh], ignore_index=True)
+        ms_analysis_df = main_study_frame.copy()
+        ms_analysis_df["MKT"] = pd.to_numeric(ms_analysis_df["MKT"], errors="coerce")
+        if not has_rh:
+            metrics = (
+                ms_analysis_df.drop(columns=["RH Min [%]", "RH Max [%]", "RH Avg [%]"])
+                .iloc[:, 1:]
+                .agg(["min", "max", "mean"])
+            )
+        else:
+            ms_analysis_df["RH Min [%]"] = pd.to_numeric(ms_analysis_df["RH Min [%]"], errors="coerce")
+            ms_analysis_df["RH Max [%]"] = pd.to_numeric(ms_analysis_df["RH Max [%]"], errors="coerce")
+            ms_analysis_df["RH Avg [%]"] = pd.to_numeric(ms_analysis_df["RH Avg [%]"], errors="coerce")
+            metrics = ms_analysis_df.iloc[:, 1:].agg(["min", "max", "mean"])
 
-            analysis_df = min_max_data_frame.copy()
-            analysis_df["MKT"] = pd.to_numeric(analysis_df["MKT"], errors="coerce")
-
+        if self.od_enabled_var.get():
+            od_analysis_df = od_frame.copy()
+            od_analysis_df["MKT"] = pd.to_numeric(od_analysis_df["MKT"], errors="coerce")
             if not has_rh:
-                metrics = (
-                    analysis_df.drop(columns=["RH Min [%]", "RH Max [%]", "RH Avg [%]"])
+                od_metrics = (
+                    od_analysis_df.drop(columns=["RH Min [%]", "RH Max [%]", "RH Avg [%]"])
                     .iloc[:, 1:]
                     .agg(["min", "max", "mean"])
                 )
             else:
-                analysis_df["RH Min [%]"] = pd.to_numeric(analysis_df["RH Min [%]"], errors="coerce")
-                analysis_df["RH Max [%]"] = pd.to_numeric(analysis_df["RH Max [%]"], errors="coerce")
-                analysis_df["RH Avg [%]"] = pd.to_numeric(analysis_df["RH Avg [%]"], errors="coerce")
-                metrics = analysis_df.iloc[:, 1:].agg(["min", "max", "mean"])
+                od_analysis_df["RH Min [%]"] = pd.to_numeric(od_analysis_df["RH Min [%]"], errors="coerce")
+                od_analysis_df["RH Max [%]"] = pd.to_numeric(od_analysis_df["RH Max [%]"], errors="coerce")
+                od_analysis_df["RH Avg [%]"] = pd.to_numeric(od_analysis_df["RH Avg [%]"], errors="coerce")
+                od_metrics = od_analysis_df.iloc[:, 1:].agg(["min", "max", "mean"])
+            od_frame = pd.concat([od_frame, od_metrics])
+            od_frame.iloc[-3:, 0] = ["Min", "Max", "Avg"]
 
-            min_max_data_frame = pd.concat([min_max_data_frame, metrics])
-            min_max_data_frame.iloc[-3:, 0] = ["Min", "Max", "Avg"]
+        if self.pf_enabled_var.get():
+            pf_analysis_df = pf_frame.copy()
+            pf_analysis_df["MKT"] = pd.to_numeric(pf_analysis_df["MKT"], errors="coerce")
+            if not has_rh:
+                pf_metrics = (
+                    pf_analysis_df.drop(columns=["RH Min [%]", "RH Max [%]", "RH Avg [%]"])
+                    .iloc[:, 1:]
+                    .agg(["min", "max", "mean"])
+                )
+            else:
+                pf_analysis_df["RH Min [%]"] = pd.to_numeric(pf_analysis_df["RH Min [%]"], errors="coerce")
+                pf_analysis_df["RH Max [%]"] = pd.to_numeric(pf_analysis_df["RH Max [%]"], errors="coerce")
+                pf_analysis_df["RH Avg [%]"] = pd.to_numeric(pf_analysis_df["RH Avg [%]"], errors="coerce")
+                pf_metrics = pf_analysis_df.iloc[:, 1:].agg(["min", "max", "mean"])
+            pf_frame = pd.concat([pf_frame, pf_metrics])
+            pf_frame.iloc[-3:, 0] = ["Min", "Max", "Avg"]
 
-            save_path = self.save_var.get().strip()
-            output_path = save_path if save_path else os.path.join(folder, "min_max_summary.xlsx")
+        main_study_frame = pd.concat([main_study_frame, metrics])
+        main_study_frame.iloc[-3:, 0] = ["Min", "Max", "Avg"]
 
-            with pd.ExcelWriter(output_path) as writer:
-                min_max_data_frame.to_excel(writer, sheet_name= "Main Study Summary",index=False)
-                if od_frame is not None and not od_frame.empty:
-                    od_frame.to_excel(writer, sheet_name="Open Door Challenge", index=False)
-                if self.pf_enabled_var.get() and not pf_frame.empty:
-                    pf_frame.to_excel(writer, sheet_name="Power Failure Challenge", index=False)
+        save_path = self.save_var.get().strip()
+        output_path = save_path if save_path else os.path.join(folder, "min_max_summary.xlsx")
+        with pd.ExcelWriter(output_path) as writer:
+            main_study_frame.to_excel(writer, sheet_name= "Main Study Summary",index=False)
+            if od_frame is not None and not od_frame.empty:
+                od_frame.to_excel(writer, sheet_name="Open Door Challenge", index=False)
+            if self.pf_enabled_var.get() and not pf_frame.empty:
+                pf_frame.to_excel(writer, sheet_name="Power Failure Challenge", index=False)
+            if temp_excursions is not None and not temp_excursions:
+                temp_excursions.to_excel(writer, sheet_name="Temp Excursions", index=False)
+            if rh_excursions is not None and not rh_excursions.empty:
+                rh_excursions.to_excel(writer, sheet_name="RH Excursions", index=False)
 
 
-            self.status_var.set("Ready")
-            messagebox.showinfo("Success", f"Summary saved successfully to:\n{output_path}")
-
-        except Exception as e:
-            self.status_var.set("Error Occurred")
-            messagebox.showerror("Execution Error", f"An error occurred during processing:\n{str(e)}")
+        self.status_var.set("Ready")
+        messagebox.showinfo("Success", f"Summary saved successfully to:\n{output_path}")
 
 
 if __name__ == "__main__":

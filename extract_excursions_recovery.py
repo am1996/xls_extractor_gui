@@ -1,6 +1,84 @@
 import os
+from tkinter import messagebox 
 import pandas as pd
 from datetime import datetime, timedelta
+
+"""
+@ This script takes a dataframe of readings and analyzes excursions based on user-defined parameters.
+@ It identifies excursions that occur within a specified challenge window and calculates the time taken for readings to recover to within the defined acceptable range.
+@ The result is output as a dataframe containing details of each excursion, including start and end times, readings, recovery times, and pass/fail status based on the recovery time limit.
+@ Inputs: Dataframe, Time column index, Value column index, Min value, Max value, Challenge start time, Challenge end time, Recovery time limit (in minutes)
+"""
+def analyze_excursions_df(
+    df: pd.DataFrame,
+    time_col_idx: int,
+    val_col_idx: int,
+    min_val: float,
+    max_val: float,
+    challenge_start: str,
+    challenge_end: str,
+    recovery_time_minutes: float,
+    filename: str
+) -> pd.DataFrame:
+    all_results = []
+    dt_format = '%d-%m-%Y %I:%M:%S %p'
+    start_time = pd.to_datetime(challenge_start)
+    end_time = pd.to_datetime(challenge_end)
+    recovery_limit = pd.Timedelta(minutes=recovery_time_minutes)
+
+    # Extend monitoring window to assess post-challenge recovery
+    max_monitoring_time = end_time + recovery_limit
+
+    time_col_name = df.columns[time_col_idx]
+    val_col_name = df.columns[val_col_idx]
+    filename = filename.replace('.csv', '').replace('.xls', '').replace('.xlsx', '').replace('.csv,', '').replace('.','')
+    # Parse dates and numerical data
+    df[time_col_name] = pd.to_datetime(df[time_col_name], errors='coerce', format='mixed')
+    df[val_col_name] = pd.to_numeric(df[val_col_name], errors='coerce')
+    df = df.dropna(subset=[time_col_name, val_col_name])
+    
+    # Filter data to the monitoring window
+    mask = (df[time_col_name] >= start_time) & (df[time_col_name] <= max_monitoring_time)
+    analysis_df = df.loc[mask].sort_values(by=time_col_name)
+    
+    in_excursion = False
+    excursion_start = None
+    excursion_start_val = None
+    excursion_count = 0
+    
+    for _, row in analysis_df.iterrows():
+        current_time = row[time_col_name]
+        current_val = row[val_col_name]
+        
+        is_out_of_bounds = (current_val < min_val) or (current_val > max_val)
+        
+        if not in_excursion:
+            # Record start of a new excursion within the challenge window
+            if is_out_of_bounds and (current_time <= end_time):
+                in_excursion = True
+                excursion_start = current_time
+                excursion_start_val = current_val
+                excursion_count += 1
+                
+        elif in_excursion and not is_out_of_bounds:
+            # Record end of excursion (first reading back in bounds)
+            in_excursion = False
+            recovery_duration = current_time - excursion_start
+            recovery_mins = round(recovery_duration.total_seconds() / 60.0, 2)
+            recovered_in_time = recovery_duration <= recovery_limit
+            
+            all_results.append({
+                "File": filename,
+                "Excursion #": excursion_count,
+                "Excursion Start": excursion_start.strftime(dt_format),
+                "Start Reading": excursion_start_val,
+                "Excursion End": current_time.strftime(dt_format),
+                "End Reading": current_val,
+                "Time to Recover (Minutes)": recovery_mins,
+                "Time to Recover (Formatted)": str(recovery_duration),
+                "Pass/Fail": "PASS" if recovered_in_time else "FAIL (Exceeded Limit)"
+            })
+    return pd.DataFrame(all_results)
 
 def analyze_excursions(
     directory: str,
@@ -26,8 +104,8 @@ def analyze_excursions(
     
     valid_extensions = ('.csv', '.xls', '.xlsx')
     all_results = []
-    dt_format = '%m/%d/%Y %I:%M:%S %p' 
-    
+    dt_format = '%d-%m-%Y %I:%M:%S %p'
+
     for filename in os.listdir(directory):
         if not filename.lower().endswith(valid_extensions):
             continue
@@ -42,7 +120,7 @@ def analyze_excursions(
                 
             time_col_name = df.columns[time_col_idx]
             val_col_name = df.columns[val_col_idx]
-            
+            filename = filename.replace('.csv', '').replace('.xls', '').replace('.xlsx', '').replace('.','')
             # Parse dates and numerical data
             df[time_col_name] = pd.to_datetime(df[time_col_name], errors='coerce', format='mixed')
             df[val_col_name] = pd.to_numeric(df[val_col_name], errors='coerce')
@@ -103,9 +181,8 @@ def analyze_excursions(
                     "Time to Recover (Formatted)": "N/A",
                     "Pass/Fail": f"FAIL (Did not recover in {recovery_time_minutes} mins)"
                 })
-                
         except Exception as e:
-            print(f"Error processing {filename}: {e}")
+            messagebox.showerror("Error", f"Failed to process file {filename}.\nError: {str(e)}")
 
     results_df = pd.DataFrame(all_results)
     
@@ -113,19 +190,19 @@ def analyze_excursions(
     if not results_df.empty:
         pd.set_option('display.max_columns', None)
         pd.set_option('display.width', 1000)
-        print(results_df.to_string(index=False))
-        
+    print(results_df)
+    results_df.to_excel(os.path.join("C:\\Users\\ahmed.magdyy\\Desktop","pf_excursion_analysis_results.xlsx"), index=False)
     return results_df
 
 # --- Example Usage ---
 if __name__ == "__main__":
     results_df = analyze_excursions(
-        directory="U:\\Qualification\\Drive\\Thermal_Mapping\\QC01\\4027\\5th_try\\Empty study\\xls", 
+        directory="U:\\Qualification\\Drive\\Thermal_Mapping\\QC01\\4026\\2nd_try\\vi2\\xls", 
         time_col_idx=1,            # 1 = Date/time column
         val_col_idx=2,             # 2 = Temperature column
-        min_val=30.0, 
-        max_val=35.0, 
-        challenge_start="7/26/2026 10:00:00 AM", 
-        challenge_end="7/26/2026 10:15:00 AM",   
-        recovery_time_minutes=60.0 
+        min_val=28.0, 
+        max_val=32.0, 
+        challenge_start="08/12/2026 02:00:00 PM", 
+        challenge_end="08/13/2026 01:00:00 PM",   
+        recovery_time_minutes=60.0
     )
