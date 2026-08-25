@@ -29,8 +29,6 @@ def analyze_excursions_df(
     # Extend monitoring window to assess post-challenge recovery
     max_monitoring_time = end_time + recovery_limit
 
-    time_col_name = df.columns[time_col_idx]
-    val_col_name = df.columns[val_col_idx]
     filename = filename.replace('.csv', '').replace('.xls', '').replace('.xlsx', '').replace('.csv,', '').replace('.','')
     # Parse dates and numerical data
     df.iloc[:, time_col_idx] = pd.to_datetime(df.iloc[:, time_col_idx], errors='coerce', format='mixed')
@@ -47,8 +45,8 @@ def analyze_excursions_df(
     excursion_count = 0
     
     for _, row in analysis_df.iterrows():
-        current_time = row[time_col_name]
-        current_val = row[val_col_name]
+        current_time = row[time_col_idx]
+        current_val = row[val_col_idx]
         
         is_out_of_bounds = (current_val < min_val) or (current_val > max_val)
         
