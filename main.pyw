@@ -9,8 +9,11 @@ import pandas as pd
 from datetime import datetime,timedelta
 import dateutil
 #------------------ Excursion Recovery Logic ------------------
-def analyze_excursions_df(
-    df,
+import pandas as pd
+
+
+def analyze_excursions(
+    df: pd.DataFrame,
     time_col_idx: int,
     val_col_idx: int,
     min_val: float,
@@ -18,26 +21,36 @@ def analyze_excursions_df(
     challenge_start: str,
     challenge_end: str,
     recovery_time_minutes: float,
-    filename: str
+    dataset_label: str = "Dataset_1" 
 ):
-    all_results = []
-    dt_format = '%d-%m-%Y %I:%M:%S %p'
+    """
+    Scans a DataFrame for temperature/humidity excursions, records reading values
+    at the start and end of each excursion, and calculates recovery times.
+    """
+    
     start_time = pd.to_datetime(challenge_start)
     end_time = pd.to_datetime(challenge_end)
     recovery_limit = pd.Timedelta(minutes=recovery_time_minutes)
-
+    
     # Extend monitoring window to assess post-challenge recovery
     max_monitoring_time = end_time + recovery_limit
+    
+    all_results = []
+    dt_format = '%d-%m-%Y %I:%M:%S %p'
 
-    filename = filename.replace('.csv', '').replace('.xls', '').replace('.xlsx', '').replace('.csv,', '').replace('.','')
-    # Parse dates and numerical data
+    # Work on a copy to avoid SettingWithCopyWarning on the original DataFrame
+    df = df.copy()
+
+    # Parse dates and numerical data directly using column indices (.iloc)
     df.iloc[:, time_col_idx] = pd.to_datetime(df.iloc[:, time_col_idx], errors='coerce', format='mixed')
     df.iloc[:, val_col_idx] = pd.to_numeric(df.iloc[:, val_col_idx], errors='coerce')
-    df = df.iloc[df.iloc[:, [time_col_idx, val_col_idx]].notna().all(axis=1).values]
+    
+    # Drop NaNs in these specific columns without touching column names
+    df = df[df.iloc[:, time_col_idx].notna() & df.iloc[:, val_col_idx].notna()]
     
     # Filter data to the monitoring window
     mask = (df.iloc[:, time_col_idx] >= start_time) & (df.iloc[:, time_col_idx] <= max_monitoring_time)
-    analysis_df = df.loc[mask].sort_values(by=time_col_idx)
+    analysis_df = df.loc[mask].sort_values(by=df.columns[time_col_idx])
     
     in_excursion = False
     excursion_start = None
@@ -45,8 +58,8 @@ def analyze_excursions_df(
     excursion_count = 0
     
     for _, row in analysis_df.iterrows():
-        current_time = row[time_col_idx]
-        current_val = row[val_col_idx]
+        current_time = row[df.columns[time_col_idx]]
+        current_val  = row[df.columns[val_col_idx]]
         
         is_out_of_bounds = (current_val < min_val) or (current_val > max_val)
         
@@ -62,11 +75,11 @@ def analyze_excursions_df(
             # Record end of excursion (first reading back in bounds)
             in_excursion = False
             recovery_duration = current_time - excursion_start
-            recovery_mins = math.round(recovery_duration.total_seconds() / 60.0, 2)
+            recovery_mins = round(recovery_duration.total_seconds() / 60.0, 2)
             recovered_in_time = recovery_duration <= recovery_limit
             
             all_results.append({
-                "File": filename,
+                "Source": dataset_label,
                 "Excursion #": excursion_count,
                 "Excursion Start": excursion_start.strftime(dt_format),
                 "Start Reading": excursion_start_val,
@@ -76,7 +89,67 @@ def analyze_excursions_df(
                 "Time to Recover (Formatted)": str(recovery_duration),
                 "Pass/Fail": "PASS" if recovered_in_time else "FAIL (Exceeded Limit)"
             })
-    return pd.DataFrame(all_results)
+            
+    # Handle excursions that never recovered within the allowed time
+    if in_excursion:
+        all_results.append({
+            "Source": dataset_label,
+            "Excursion #": excursion_count,
+            "Excursion Start": excursion_start.strftime(dt_format),
+            "Start Reading": excursion_start_val,
+            "Excursion End": "N/A",
+            "End Reading": "N/A",
+            "Time to Recover (Minutes)": "Did not recover",
+            "Time to Recover (Formatted)": "N/A",
+            "Pass/Fail": f"FAIL (Did not recover in {recovery_time_minutes} mins)"
+        })
+
+    results_df = pd.DataFrame(all_results)
+    
+    print(f"\n--- Analysis Complete for {dataset_label}. Found {len(all_results)} total excursion events ---")
+    
+    return results_df
+
+def analyze_multiple_datasets(datasets, time_col_idx, val_col_idx, min_val, max_val, challenge_start, challenge_end, recovery_time_minutes):
+    """
+    Analyzes multiple datasets for excursions and recovery times.
+    
+    Parameters:
+        datasets (list of tuples): Each tuple contains (DataFrame, dataset_label).
+        time_col_idx (int): Index of the time column.
+        val_col_idx (int): Index of the value column.
+        min_val (float): Minimum acceptable value.
+        max_val (float): Maximum acceptable value.
+        challenge_start (str): Start of the challenge window.
+        challenge_end (str): End of the challenge window.
+        recovery_time_minutes (float): Allowed recovery time in minutes.
+        
+    Returns:
+        pd.DataFrame: Combined results from all datasets.
+    """
+    combined_results = []
+    
+    for df, label in datasets:
+        try:
+            result_df = analyze_excursions(
+                df,
+                time_col_idx,
+                val_col_idx,
+                min_val,
+                max_val,
+                challenge_start,
+                challenge_end,
+                recovery_time_minutes,
+                dataset_label=label
+            )
+            combined_results.append(result_df)
+        except Exception as e:
+            print(f"Error processing dataset {label}: {e}")
+    
+    if combined_results:
+        return pd.concat(combined_results, ignore_index=True)
+    else:
+        return pd.DataFrame()
 
 # ------------------ Core Processing Logic ------------------
 def parse_safe(date_val):
@@ -500,6 +573,35 @@ class DataloggerApp:
             main_frame, text="Generate Summary", command=self.process_files
         )
         self.run_btn.grid(row=9, column=0, columnspan=3, pady=5, ipady=4)
+        # --- Status ---
+        self.status_var = tk.StringVar(value="")
+        self.status_label = ttk.Label(
+            main_frame,
+            textvariable=self.status_var,
+            font=("Arial", 9, "italic"),
+            foreground="gray",
+        )
+        self.status_label.grid(row=5, column=0, columnspan=3, sticky=tk.W, pady=5)
+        # --- Progress Log (embedded, always visible, sits directly under the button) ---
+        progress_frame = ttk.Frame(main_frame)
+        progress_frame.grid(row=10, column=0, columnspan=3, sticky=tk.EW, padx=5, pady=(0, 10))
+
+        log_scrollbar = ttk.Scrollbar(progress_frame)
+        log_scrollbar.pack(side=tk.RIGHT, fill="y")
+
+        self.progress_log = tk.Text(
+            progress_frame,
+            height=8,
+            wrap="word",
+            state="disabled",
+            bg="#f0f0f0",
+            fg="#333333",
+            relief="sunken",
+            borderwidth=1,
+            yscrollcommand=log_scrollbar.set,
+        )
+        self.progress_log.pack(side=tk.LEFT, fill="both", expand=True)
+        log_scrollbar.config(command=self.progress_log.yview)
 
     def toggle_date_mode(self, event=None):
         if self.date_mode_var.get() == "Separated Columns":
@@ -511,6 +613,15 @@ class DataloggerApp:
             self.time_dropdown.grid_remove()
             self.date_lbl.config(text="Date/Time Column Index:")
 
+    def update_progress(self, text):
+        print(text)
+        self.status_var.set(text)
+        self.progress_log.config(state="normal")   # unlock
+        self.progress_log.insert("end", text + "\n")  # append a line
+        self.progress_log.see("end")                  # scroll to bottom
+        self.progress_log.config(state="disabled")  # lock again
+        self.root.update_idletasks()                # force Tk to redraw now
+    
     def toggle_rh_state(self):
         if self.has_rh_var.get():
             self.rh_dropdown.config(state="normal")
@@ -557,6 +668,7 @@ class DataloggerApp:
             self.save_var.set(os.path.normpath(selected_file))
         
     def process_files(self):
+        self.clear_progress_log()
         od_frame = None
         folder = self.folder_var.get()
         start_date = self.start_date_var.get()
@@ -600,7 +712,12 @@ class DataloggerApp:
         main_study_frame = pd.DataFrame(columns=cols)
         od_frame = pd.DataFrame(columns=cols)
         pf_frame = pd.DataFrame(columns=cols)
+        od_temp_excursions = pd.DataFrame()
+        od_hum_excursions = pd.DataFrame()
+        pf_temp_excursions = pd.DataFrame()
+        pf_hum_excursions = pd.DataFrame()
         for f in files:
+            self.update_progress(f"Processing file: {Path(f).name}")
             df = load_file(f, rows_to_skip)
             ms_data_min, ms_data_max, ms_data_avg, ms_data_mkt, ms_rh_min, ms_rh_max, ms_rh_avg = (
                 extract_min_max_avg(
@@ -634,8 +751,33 @@ class DataloggerApp:
                 parse_safe(self.pf_end_var.get()),
                 parse_safe(end_date),
             ]
-            end_study_date = max([d for d in valid_dates if d is not None]) + timedelta(minutes=int(self.recovery_pf.get()) if self.pf_enabled_var.get() else 60)
             if self.od_enabled_var.get():
+                self.update_progress(f"Analyzing OD Excursions from date/time: {self.od_start_var.get()} to {self.od_end_var.get()} recovery time: {self.recovery_od.get()} minutes")
+                excursions_od_temp = analyze_excursions(
+                    df,
+                    time_col_idx=time_idx if date_mode == "Separated Columns" else date_idx,
+                    val_col_idx=temp_idx,
+                    min_val=float(self.lcl_temp.get()),
+                    max_val=float(self.ucl_temp.get()),
+                    challenge_start=parse_safe(self.od_start_var.get()),
+                    challenge_end=parse_safe(self.od_end_var.get()),
+                    recovery_time_minutes=int(self.recovery_od.get()),
+                    dataset_label=f"{Path(f).stem}",
+                )
+                od_temp_excursions = pd.concat([od_temp_excursions, excursions_od_temp], ignore_index=True)
+                if self.has_rh_var.get():
+                    excursions_od_rh = analyze_excursions(
+                        df,
+                        time_col_idx=time_idx if date_mode == "Separated Columns" else date_idx,
+                        val_col_idx=rh_idx,
+                        min_val=float(self.lcl_rh.get()),
+                        max_val=float(self.ucl_rh.get()),
+                        challenge_start=parse_safe(self.od_start_var.get()),
+                        challenge_end=parse_safe(self.od_end_var.get()),
+                        recovery_time_minutes=int(self.recovery_od.get()),
+                        dataset_label=f"{Path(f).stem}",
+                    )
+                    od_hum_excursions = pd.concat([od_hum_excursions, excursions_od_rh], ignore_index=True)
                 od_data_min, od_data_max, od_data_avg, od_data_mkt, od_rh_min, od_rh_max, od_rh_avg = (
                     extract_min_max_avg(
                         df,
@@ -664,8 +806,32 @@ class DataloggerApp:
                 )
                 od_frame = pd.concat([od_frame, new_row_od], ignore_index=True)
             if self.pf_enabled_var.get():
-                print(type(int(self.recovery_pf.get())))
-                
+                self.update_progress(f"Analyzing PF Excursions from date/time: {self.pf_start_var.get()} to {self.pf_end_var.get()} recovery time: {self.recovery_pf.get()} minutes")
+                excursions_pf_temp = analyze_excursions(
+                    df,
+                    time_col_idx=time_idx if date_mode == "Separated Columns" else date_idx,
+                    val_col_idx=temp_idx,
+                    min_val=float(self.lcl_temp.get()),
+                    max_val=float(self.ucl_temp.get()),
+                    challenge_start=parse_safe(self.pf_start_var.get()),
+                    challenge_end=parse_safe(self.pf_end_var.get()),
+                    recovery_time_minutes=int(self.recovery_pf.get()),
+                    dataset_label=f"{Path(f).stem}",
+                )
+                pf_temp_excursions = pd.concat([pf_temp_excursions, excursions_pf_temp], ignore_index=True)
+                if self.has_rh_var.get():
+                    excursions_pf_rh = analyze_excursions(
+                        df,
+                        time_col_idx=time_idx if date_mode == "Separated Columns" else date_idx,
+                        val_col_idx=rh_idx,
+                        min_val=float(self.lcl_rh.get()),
+                        max_val=float(self.ucl_rh.get()),
+                        challenge_start=parse_safe(self.pf_start_var.get()),
+                        challenge_end=parse_safe(self.pf_end_var.get()),
+                        recovery_time_minutes=int(self.recovery_pf.get()),
+                        dataset_label=f"{Path(f).stem}",
+                    )
+                    pf_hum_excursions = pd.concat([pf_hum_excursions, excursions_pf_rh], ignore_index=True)
                 pf_data_min, pf_data_max, pf_data_avg, pf_data_mkt, pf_rh_min, pf_rh_max, pf_rh_avg = (
                     extract_min_max_avg(
                         df,
@@ -697,35 +863,11 @@ class DataloggerApp:
                     messagebox.showerror("Error", "Please enter a valid LCL temperature for Power Failure Challenge Test.")
                 if self.ucl_temp.get() is None:
                     messagebox.showerror("Error", "Please enter a valid UCL temperature for Power Failure Challenge Test.")
-                excursions_temp = analyze_excursions_df(
-                    df,
-                    time_idx,
-                    temp_idx,
-                    int(self.lcl_temp.get()),
-                    int(self.ucl_temp.get()),
-                    str(start_date),
-                    str(end_study_date),
-                    int(self.recovery_pf.get()) if self.pf_enabled_var.get() else 60,
-                    filename=Path(f).stem
-                )
-                temp_excursions = pd.concat([temp_excursions, excursions_temp], ignore_index=True)
                 if self.has_rh_var.get():
                     if self.lcl_rh.get() is None:
                         messagebox.showerror("Error", "Please enter a valid LCL humidity for Power Failure Challenge Test.")
                     if self.ucl_rh.get() is None:
                         messagebox.showerror("Error", "Please enter a valid UCL humidity for Power Failure Challenge Test.")
-                    excursions_rh = analyze_excursions_df(
-                        df,
-                        time_idx,
-                        rh_idx,
-                        int(self.lcl_rh.get()),
-                        int(self.ucl_rh.get()),
-                        str(start_date),
-                        str(end_study_date),
-                        int(self.recovery_pf.get()) if self.pf_enabled_var.get() else 60,
-                        filename=Path(f).stem
-                    )
-                    rh_excursions = pd.concat([rh_excursions, excursions_rh], ignore_index=True)
         ms_analysis_df = main_study_frame.copy()
         ms_analysis_df["MKT"] = pd.to_numeric(ms_analysis_df["MKT"], errors="coerce")
         if not has_rh:
@@ -785,10 +927,11 @@ class DataloggerApp:
                 od_frame.to_excel(writer, sheet_name="Open Door Challenge", index=False)
             if self.pf_enabled_var.get() and not pf_frame.empty:
                 pf_frame.to_excel(writer, sheet_name="Power Failure Challenge", index=False)
-            if temp_excursions is not None and not temp_excursions:
-                temp_excursions.to_excel(writer, sheet_name="Temp Excursions", index=False)
-            if rh_excursions is not None and not rh_excursions.empty:
-                rh_excursions.to_excel(writer, sheet_name="RH Excursions", index=False)
+
+            excursions_od_temp.to_excel(writer, sheet_name="OD Temp Excursions", index=False)
+            excursions_pf_temp.to_excel(writer, sheet_name="PF Temp Excursions", index=False)
+            excursions_od_rh.to_excel(writer, sheet_name="OD RH Excursions", index=False)
+            excursions_pf_rh.to_excel(writer, sheet_name="PF RH Excursions", index=False)
 
 
         self.status_var.set("Ready")
