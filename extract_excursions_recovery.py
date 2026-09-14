@@ -197,12 +197,12 @@ def analyze_excursions(
 # --- Example Usage ---
 if __name__ == "__main__":
     results_df = analyze_excursions(
-        directory="U:\\Qualification\\Drive\\Thermal_Mapping\\QC01\\2026\\QC01-4105\\2nd_report_30_65_26_08_2026\\XLS", 
+        directory="U:\\Qualification\\Drive\\Thermal_Mapping\\QC01\\2026\\QC01-4105\\TM-QC01-4105 30 +-2 -60+-5\\XLS", 
         time_col_idx=1,            # 1 = Date/time column
-        val_col_idx=2,             # 3 = Humidity column
-        min_val=28.0, 
-        max_val=32.0, 
-        challenge_start="08/30/2026 12:00:00 PM", 
-        challenge_end="08/30/2026 02:00:00 PM",   
+        val_col_idx=3,             # 3 = Humidity column
+        min_val=60.0, 
+        max_val=70.0, 
+        challenge_start="08/30/2026 10:25:00 AM", 
+        challenge_end="08/30/2026 10:40:00 AM",   
         recovery_time_minutes=60.0
     )
