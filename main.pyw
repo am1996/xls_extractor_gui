@@ -875,8 +875,8 @@ class DataloggerApp:
         output_path = save_path if save_path else os.path.join(folder, "min_max_summary.xlsx")
         with pd.ExcelWriter(output_path) as writer:
             study_meta_data_frame = pd.DataFrame({
-                "Study Metadata": ["Start Date/Time", "End Date/Time", "Temperature LCL", "Temperature UCL", "Humidity LCL", "Humidity UCL"],
-                "Values": [start_date, end_date, self.lcl_temp.get(), self.ucl_temp.get(), self.lcl_rh.get() if has_rh else "N/A", self.ucl_rh.get() if has_rh else "N/A"]
+                "Study Metadata": ["Start Date/Time", "End Date/Time", "Temperature LCL", "Temperature UCL", "Humidity LCL", "Humidity UCL","Open Door Start Date/Time","Open Door End Date/Time","Power Failure Start Date/Time","Power Failure End Date/Time"],
+                "Values": [start_date, end_date, self.lcl_temp.get(), self.ucl_temp.get(), self.lcl_rh.get() if has_rh else "N/A", self.ucl_rh.get() if has_rh else "N/A", self.od_start_date, self.od_end_date, self.pf_start_date, self.pf_end_date]
             })
             main_study_frame.to_excel(writer, sheet_name= "Main Study Summary",index=False)
             if od_frame is not None and not od_frame.empty:
