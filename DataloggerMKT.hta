@@ -1,0 +1,774 @@
+<html>
+<head>
+<meta http-equiv="x-ua-compatible" content="ie=9">
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<title>Datalogger MKT Summary Generator</title>
+<HTA:APPLICATION ID="app" APPLICATIONNAME="DataloggerMKT" BORDER="thick" CAPTION="yes"
+  SCROLL="yes" SINGLEINSTANCE="yes" MAXIMIZEBUTTON="yes" MINIMIZEBUTTON="yes" />
+<style>
+  body { font-family: Segoe UI, Arial, sans-serif; font-size: 13px; margin: 12px; background: #f5f5f5; }
+  fieldset { margin: 10px 0; padding: 8px 12px; border: 1px solid #bbb; background: #fff; }
+  legend { font-weight: bold; }
+  table td { padding: 3px 6px; vertical-align: middle; }
+  input[type=text] { width: 300px; }
+  input.s { width: 70px; }
+  small { color: #666; }
+  #log { width: 100%; height: 150px; background: #f0f0f0; font-family: Consolas, monospace; font-size: 12px; }
+  button { padding: 5px 14px; }
+</style>
+</head>
+<body>
+
+<table>
+  <tr>
+    <td>Files Folder:</td>
+    <td><input type="text" id="folder"></td>
+    <td><button id="browseFolder">Browse...</button></td>
+    <td>File Type:
+      <select id="ext">
+        <option value="xls" selected>xls</option>
+        <option value="xlsx">xlsx</option>
+        <option value="csv">csv</option>
+        <option value="all">all</option>
+      </select>
+    </td>
+  </tr>
+  <tr>
+    <td>Save As:</td>
+    <td><input type="text" id="savepath"></td>
+    <td><button id="browseSave">Browse...</button></td>
+    <td></td>
+  </tr>
+  <tr>
+    <td>Start Date/Time:<br><small>(YYYY-MM-DD HH:MM:SS AM/PM)</small></td>
+    <td colspan="3"><input type="text" id="startdt"></td>
+  </tr>
+  <tr>
+    <td>End Date/Time:<br><small>(YYYY-MM-DD HH:MM:SS AM/PM)</small></td>
+    <td colspan="3"><input type="text" id="enddt"></td>
+  </tr>
+</table>
+
+<fieldset>
+  <legend>Data Import Settings</legend>
+  <table>
+    <tr>
+      <td>Rows to Skip (Header):</td>
+      <td><input class="s" type="text" id="skip" value="11"></td>
+      <td></td><td></td>
+    </tr>
+    <tr>
+      <td>Date/Time Layout:</td>
+      <td>
+        <select id="dmode">
+          <option value="Single Column" selected>Single Column</option>
+          <option value="Separated Columns">Separated Columns</option>
+        </select>
+      </td>
+      <td></td><td></td>
+    </tr>
+    <tr>
+      <td><span id="datelbl">Date/Time Column Index:</span></td>
+      <td><input class="s" type="text" id="dcol" value="1"></td>
+      <td><span id="timelbl">Time Column Index:</span></td>
+      <td><input class="s" type="text" id="tcol" value="2"></td>
+    </tr>
+    <tr>
+      <td>Temperature Column Index:</td>
+      <td><input class="s" type="text" id="tempcol" value="2"></td>
+      <td></td><td></td>
+    </tr>
+    <tr>
+      <td>RH Column Index:</td>
+      <td><input class="s" type="text" id="rhcol" value="3"></td>
+      <td colspan="2"><input type="checkbox" id="hasrh" checked> RH Data Available</td>
+    </tr>
+  </table>
+  <small>Column indices are 0-based, same as the Python version.</small>
+</fieldset>
+
+<fieldset>
+  <legend>Acceptance Criteria Temperature</legend>
+  Temp LCL: <input class="s" type="text" id="lclt" value="18">
+  &nbsp;&nbsp; Temp UCL: <input class="s" type="text" id="uclt" value="25">
+</fieldset>
+
+<fieldset>
+  <legend>Acceptance Criteria Humidity</legend>
+  Humidity LCL: <input class="s" type="text" id="lclh" value="60">
+  &nbsp;&nbsp; Humidity UCL: <input class="s" type="text" id="uclh" value="70">
+</fieldset>
+
+<fieldset>
+  <legend>Open Door Challenge Test</legend>
+  <table>
+    <tr><td>Start Date/Time:<br><small>(YYYY-MM-DD HH:MM:SS AM/PM)</small></td>
+        <td><input type="text" id="odstart"></td></tr>
+    <tr><td>End Date/Time:<br><small>(YYYY-MM-DD HH:MM:SS AM/PM)</small></td>
+        <td><input type="text" id="odend"></td></tr>
+    <tr><td>Recovery Time (minutes):</td>
+        <td><input class="s" type="text" id="odrec" value="60"></td></tr>
+    <tr><td>Enable/Disable:</td>
+        <td><input type="checkbox" id="oden" checked> OD Challenge Test Enabled</td></tr>
+  </table>
+</fieldset>
+
+<fieldset>
+  <legend>Power Failure Challenge Test</legend>
+  <table>
+    <tr><td>Start Date/Time:<br><small>(YYYY-MM-DD HH:MM:SS AM/PM)</small></td>
+        <td><input type="text" id="pfstart"></td></tr>
+    <tr><td>End Date/Time:<br><small>(YYYY-MM-DD HH:MM:SS AM/PM)</small></td>
+        <td><input type="text" id="pfend"></td></tr>
+    <tr><td>Recovery Time (minutes):</td>
+        <td><input class="s" type="text" id="pfrec" value="60"></td></tr>
+    <tr><td>Enable/Disable:</td>
+        <td><input type="checkbox" id="pfen" checked> Power Failure Challenge Test Enabled</td></tr>
+  </table>
+</fieldset>
+
+<p><button id="btn">Generate Summary</button></p>
+<textarea id="log" readonly></textarea>
+
+<script language="VBScript">
+Option Explicit
+
+Dim fso, gXL
+Dim gFiles, gIdx
+Dim gMS, gOD, gPF, gODT, gODH, gPFT, gPFH
+Dim gSkip, gMode, gDateIdx, gTimeIdx, gTempIdx, gRhIdx, gHasRH
+Dim gLclT, gUclT, gLclH, gUclH
+Dim gStart, gEnd, gODen, gODs, gODe, gODrec, gPFen, gPFs, gPFe, gPFrec
+Dim gOutPath, gRe
+Set fso = CreateObject("Scripting.FileSystemObject")
+Set gRe = Nothing
+
+Dim SUMMARY_HDR
+SUMMARY_HDR = Array("Datalogger", "Min Temp [" & ChrW(176) & "C]", "Max Temp [" & ChrW(176) & "C]", "Avg Temp [" & ChrW(176) & "C]", "MKT", "RH Min [%]", "RH Max [%]", "RH Avg [%]")
+Dim EXC_HDR
+EXC_HDR = Array("File", "Excursion #", "Excursion Start", "Start Reading", "Excursion End", "End Reading", "Time to Recover (Minutes)", "Time to Recover (Formatted)", "Pass/Fail")
+
+' ------------------ Helpers ------------------
+Function V(id)
+    V = document.getElementById(id).value
+End Function
+
+Function Chk(id)
+    Chk = document.getElementById(id).checked
+End Function
+
+Function P2(n)
+    P2 = Right("0" & CStr(n), 2)
+End Function
+
+Function FmtISO(d)
+    Dim h, ap
+    h = Hour(d) : ap = "AM"
+    If h >= 12 Then ap = "PM"
+    h = h Mod 12 : If h = 0 Then h = 12
+    FmtISO = Year(d) & "-" & P2(Month(d)) & "-" & P2(Day(d)) & " " & P2(h) & ":" & P2(Minute(d)) & ":" & P2(Second(d)) & " " & ap
+End Function
+
+Function FmtDur(totalSec)
+    Dim dd, rem1, hh, mm, ss
+    dd = Int(totalSec / 86400)
+    rem1 = totalSec - dd * 86400
+    hh = Int(rem1 / 3600) : rem1 = rem1 - hh * 3600
+    mm = Int(rem1 / 60) : ss = rem1 - mm * 60
+    FmtDur = dd & " days " & P2(hh) & ":" & P2(mm) & ":" & P2(ss)
+End Function
+
+Sub LogMsg(t)
+    Dim el
+    Set el = document.getElementById("log")
+    el.value = el.value & t & vbCrLf
+    el.scrollTop = el.scrollHeight
+End Sub
+
+Sub AddRow(dict, arr)
+    dict.Add dict.Count, arr
+End Sub
+
+Function ToNum(x)
+    ToNum = Empty
+    If IsEmpty(x) Or IsNull(x) Then Exit Function
+    Select Case VarType(x)
+        Case 2, 3, 4, 5, 6
+            ToNum = CDbl(x)
+        Case 8
+            Dim s
+            s = Trim(x)
+            If s <> "" Then
+                Dim q
+                On Error Resume Next
+                q = Num(s)
+                If Err.Number = 0 Then ToNum = q
+                Err.Clear
+                On Error GoTo 0
+            End If
+    End Select
+End Function
+
+' Flexible date parser (day-first for ambiguous d/m/y; swaps if month > 12)
+Function ParseSafe(v)
+    ParseSafe = Empty
+    If IsEmpty(v) Or IsNull(v) Then Exit Function
+    Dim vt : vt = VarType(v)
+    If vt = 7 Then ParseSafe = v : Exit Function
+    If vt = 5 Then
+        If v > 0 Then ParseSafe = CDate(v)
+        Exit Function
+    End If
+    Dim s : s = Trim(CStr(v))
+    If s = "" Then Exit Function
+    Dim m, y, mo, d, h, mi, sec, ap
+    If gRe Is Nothing Then
+        Set gRe = New RegExp
+        gRe.IgnoreCase = True
+        gRe.Pattern = "^(\d{1,4})[-/.](\d{1,2})[-/.](\d{1,4})(?:[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?\s*([AP]M)?)?$"
+    End If
+    Dim ms : Set ms = gRe.Execute(s)
+    If ms.Count = 0 Then
+        On Error Resume Next
+        If IsDate(s) Then ParseSafe = CDate(s)
+        On Error GoTo 0
+        Exit Function
+    End If
+    Set m = ms(0)
+    If Len(m.SubMatches(0)) = 4 Then
+        y = CInt(m.SubMatches(0)) : mo = CInt(m.SubMatches(1)) : d = CInt(m.SubMatches(2))
+    Else
+        d = CInt(m.SubMatches(0)) : mo = CInt(m.SubMatches(1)) : y = CInt(m.SubMatches(2))
+        If y < 100 Then y = y + 2000
+        If mo > 12 And d <= 12 Then
+            Dim tmp : tmp = d : d = mo : mo = tmp
+        End If
+    End If
+    h = 0 : mi = 0 : sec = 0
+    If m.SubMatches(3) <> "" Then h = CInt(m.SubMatches(3))
+    If m.SubMatches(4) <> "" Then mi = CInt(m.SubMatches(4))
+    If m.SubMatches(5) <> "" Then sec = CInt(m.SubMatches(5))
+    ap = UCase(m.SubMatches(6))
+    If ap = "PM" And h < 12 Then h = h + 12
+    If ap = "AM" And h = 12 Then h = 0
+    On Error Resume Next
+    ParseSafe = DateSerial(y, mo, d) + TimeSerial(h, mi, sec)
+    If Err.Number <> 0 Then ParseSafe = Empty : Err.Clear
+    On Error GoTo 0
+End Function
+
+Function ToDateStr(x)
+    If VarType(x) = 7 Or VarType(x) = 5 Then
+        ToDateStr = Year(CDate(x)) & "-" & P2(Month(CDate(x))) & "-" & P2(Day(CDate(x)))
+    Else
+        ToDateStr = Trim(CStr(x))
+    End If
+End Function
+
+Function ToTimeStr(x)
+    If VarType(x) = 7 Or VarType(x) = 5 Then
+        ToTimeStr = P2(Hour(CDate(x))) & ":" & P2(Minute(CDate(x))) & ":" & P2(Second(CDate(x)))
+    Else
+        ToTimeStr = Trim(CStr(x))
+    End If
+End Function
+
+Function CombineDT(dv, tv)
+    CombineDT = Empty
+    If IsEmpty(dv) Or IsEmpty(tv) Then Exit Function
+    Dim dn, tn
+    dn = (VarType(dv) = 7 Or VarType(dv) = 5)
+    tn = (VarType(tv) = 7 Or VarType(tv) = 5)
+    If dn And tn Then
+        CombineDT = CDate(Int(CDbl(dv)) + (CDbl(tv) - Int(CDbl(tv))))
+    Else
+        CombineDT = ParseSafe(ToDateStr(dv) & " " & ToTimeStr(tv))
+    End If
+End Function
+
+' ------------------ Core Processing Logic ------------------
+' Returns Array(min, max, avg, mkt, rhMin, rhMax, rhAvg)
+Function Stats(dts, temps, rhs, n, s, e)
+    Dim i, t, tc, tmin, tmax, tsum, expsum, rc, rmin, rmax, rsum, r
+    tc = 0 : rc = 0 : expsum = 0 : tsum = 0 : rsum = 0
+    For i = 0 To n - 1
+        If Not IsEmpty(dts(i)) Then
+            If dts(i) >= s And dts(i) <= e Then
+                t = temps(i)
+                If Not IsEmpty(t) Then
+                    If tc = 0 Then
+                        tmin = t : tmax = t
+                    Else
+                        If t < tmin Then tmin = t
+                        If t > tmax Then tmax = t
+                    End If
+                    tsum = tsum + t
+                    expsum = expsum + Exp(-10000 / (t + 273.15))
+                    tc = tc + 1
+                End If
+                If gHasRH Then
+                    r = rhs(i)
+                    If Not IsEmpty(r) Then
+                        If rc = 0 Then
+                            rmin = r : rmax = r
+                        Else
+                            If r < rmin Then rmin = r
+                            If r > rmax Then rmax = r
+                        End If
+                        rsum = rsum + r
+                        rc = rc + 1
+                    End If
+                End If
+            End If
+        End If
+    Next
+    If tc = 0 Then
+        Stats = Array("N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "N/A")
+        Exit Function
+    End If
+    Dim mkt
+    mkt = 10000 / (-Log(expsum / tc)) - 273.15
+    If gHasRH And rc > 0 Then
+        Stats = Array(tmin, tmax, tsum / tc, mkt, rmin, rmax, rsum / rc)
+    Else
+        Stats = Array(tmin, tmax, tsum / tc, mkt, "N/A", "N/A", "N/A")
+    End If
+End Function
+
+Function Excursions(dts, vals, n, minV, maxV, cs, ce, recMin, label, dict)
+    Dim i, t, v, oob, inEx, exStart, exVal, cnt, maxT, durSec, limSec
+    maxT = ce + recMin / 1440
+    limSec = recMin * 60
+    inEx = False : cnt = 0
+    For i = 0 To n - 1
+        t = dts(i) : v = vals(i)
+        If Not IsEmpty(t) And Not IsEmpty(v) Then
+            If t >= cs And t <= maxT Then
+                oob = (v < minV) Or (v > maxV)
+                If Not inEx Then
+                    If oob And t <= ce Then
+                        inEx = True : exStart = t : exVal = v : cnt = cnt + 1
+                    End If
+                ElseIf Not oob Then
+                    inEx = False
+                    durSec = Round((t - exStart) * 86400)
+                    Dim pf
+                    If durSec <= limSec Then pf = "PASS" Else pf = "FAIL (Exceeded Limit)"
+                    AddRow dict, Array(label, cnt, CDate(exStart), exVal, CDate(t), v, Round(durSec / 60, 2), FmtDur(durSec), pf)
+                End If
+            End If
+        End If
+    Next
+    If inEx Then
+        AddRow dict, Array(label, cnt, CDate(exStart), exVal, "N/A", "N/A", "Did not recover", "N/A", "FAIL (Did not recover within allowed time)")
+    End If
+    Excursions = cnt
+End Function
+
+' Appends Min / Max / Avg rows (across files) to a summary dictionary
+Sub AppendMetrics(dict)
+    Dim c, r, a, x, cnt, mn, mx, sm, n
+    n = dict.Count
+    Dim rowMin(7), rowMax(7), rowAvg(7)
+    rowMin(0) = "Min" : rowMax(0) = "Max" : rowAvg(0) = "Avg"
+    For c = 1 To 7
+        cnt = 0 : sm = 0
+        For r = 0 To n - 1
+            a = dict.Item(r)
+            x = a(c)
+            If VarType(x) <> 8 And Not IsEmpty(x) Then
+                If cnt = 0 Then
+                    mn = x : mx = x
+                Else
+                    If x < mn Then mn = x
+                    If x > mx Then mx = x
+                End If
+                sm = sm + x : cnt = cnt + 1
+            End If
+        Next
+        If cnt = 0 Then
+            rowMin(c) = "N/A" : rowMax(c) = "N/A" : rowAvg(c) = "N/A"
+        Else
+            rowMin(c) = mn : rowMax(c) = mx : rowAvg(c) = sm / cnt
+        End If
+    Next
+    AddRow dict, rowMin
+    AddRow dict, rowMax
+    AddRow dict, rowAvg
+End Sub
+
+Sub WriteSheet(wb, idx, nm, hdr, dict, kind)
+    Dim ws, cols, cnt, arr(), r, c, a
+    If idx = 1 Then
+        Set ws = wb.Worksheets(1)
+    Else
+        Set ws = wb.Worksheets.Add(, wb.Worksheets(wb.Worksheets.Count))
+    End If
+    ws.Name = nm
+    cols = UBound(hdr) + 1
+    cnt = dict.Count
+    ReDim arr(cnt, cols - 1)
+    For c = 0 To cols - 1 : arr(0, c) = hdr(c) : Next
+    For r = 0 To cnt - 1
+        a = dict.Item(r)
+        For c = 0 To cols - 1 : arr(r + 1, c) = a(c) : Next
+    Next
+    If kind = "meta" Then ws.Columns(2).NumberFormat = "@"
+    ws.Range(ws.Cells(1, 1), ws.Cells(cnt + 1, cols)).Value = arr
+    ws.Range(ws.Cells(1, 1), ws.Cells(1, cols)).Font.Bold = True
+    If kind = "exc" And cnt > 0 Then
+        ws.Range(ws.Cells(2, 3), ws.Cells(cnt + 1, 3)).NumberFormat = "dd-mm-yyyy hh:mm:ss AM/PM"
+        ws.Range(ws.Cells(2, 5), ws.Cells(cnt + 1, 5)).NumberFormat = "dd-mm-yyyy hh:mm:ss AM/PM"
+    End If
+    ws.Columns.AutoFit
+End Sub
+
+' ------------------ GUI ------------------
+Sub InitForm
+    On Error Resume Next
+    window.resizeTo 920, 900
+    On Error GoTo 0
+    Dim nowS : nowS = FmtISO(Now)
+    document.getElementById("startdt").value = nowS
+    document.getElementById("enddt").value = nowS
+    document.getElementById("odstart").value = nowS
+    document.getElementById("odend").value = nowS
+    document.getElementById("pfstart").value = nowS
+    document.getElementById("pfend").value = nowS
+    ToggleDate
+End Sub
+
+Sub ToggleDate
+    If V("dmode") = "Separated Columns" Then
+        document.getElementById("timelbl").style.visibility = "visible"
+        document.getElementById("tcol").style.visibility = "visible"
+        document.getElementById("datelbl").innerText = "Date Column Index:"
+    Else
+        document.getElementById("timelbl").style.visibility = "hidden"
+        document.getElementById("tcol").style.visibility = "hidden"
+        document.getElementById("datelbl").innerText = "Date/Time Column Index:"
+    End If
+End Sub
+Sub dmode_onchange : ToggleDate : End Sub
+
+Sub hasrh_onclick
+    Dim on_ : on_ = Chk("hasrh")
+    document.getElementById("rhcol").disabled = Not on_
+    document.getElementById("lclh").disabled = Not on_
+    document.getElementById("uclh").disabled = Not on_
+End Sub
+
+Sub oden_onclick
+    Dim on_ : on_ = Chk("oden")
+    document.getElementById("odstart").disabled = Not on_
+    document.getElementById("odend").disabled = Not on_
+    document.getElementById("odrec").disabled = Not on_
+End Sub
+
+Sub pfen_onclick
+    Dim on_ : on_ = Chk("pfen")
+    document.getElementById("pfstart").disabled = Not on_
+    document.getElementById("pfend").disabled = Not on_
+    document.getElementById("pfrec").disabled = Not on_
+End Sub
+
+Sub browseFolder_onclick
+    Dim sh, f
+    Set sh = CreateObject("Shell.Application")
+    Set f = sh.BrowseForFolder(0, "Select folder containing data files", 0)
+    If Not f Is Nothing Then document.getElementById("folder").value = f.Self.Path
+End Sub
+
+Sub browseSave_onclick
+    Dim xl, p
+    On Error Resume Next
+    Set xl = CreateObject("Excel.Application")
+    p = xl.GetSaveAsFilename("min_max_summary.xlsx", "Excel Files (*.xlsx),*.xlsx", 1, "Save output as")
+    xl.Quit
+    If Err.Number <> 0 Then
+        Err.Clear
+        p = InputBox("Full path of the output .xlsx file:", "Save output as", "min_max_summary.xlsx")
+    End If
+    On Error GoTo 0
+    If VarType(p) = 8 Then
+        If p <> "" Then
+            If LCase(Right(p, 5)) <> ".xlsx" Then p = p & ".xlsx"
+            document.getElementById("savepath").value = p
+        End If
+    End If
+End Sub
+
+' Locale-safe string -> Double (accepts "." or "," as decimal separator)
+Function Num(s)
+    Dim dsep, t
+    dsep = Mid(CStr(1.5), 2, 1)
+    t = Replace(Replace(Trim(CStr(s)), ".", dsep), ",", dsep)
+    Num = CDbl(t)
+End Function
+
+Function NumOK(id, label)
+    Dim x
+    NumOK = True
+    On Error Resume Next
+    x = Num(V(id))
+    If Err.Number <> 0 Or Trim(V(id)) = "" Then
+        Err.Clear
+        MsgBox "Please enter a valid number for " & label & ".", vbCritical, "Error"
+        NumOK = False
+    End If
+    On Error GoTo 0
+End Function
+
+Function DateOK(id, label)
+    DateOK = True
+    If IsEmpty(ParseSafe(V(id))) Then
+        MsgBox "Could not read the date/time for " & label & ".", vbCritical, "Error"
+        DateOK = False
+    End If
+End Function
+
+Sub btn_onclick
+    Dim folder, ext, f, e
+    document.getElementById("log").value = ""
+    folder = Trim(V("folder"))
+    If folder = "" Then MsgBox "Please select a folder.", vbCritical, "Error" : Exit Sub
+    If Not fso.FolderExists(folder) Then MsgBox "Folder not found:" & vbCrLf & folder, vbCritical, "Error" : Exit Sub
+
+    If Not NumOK("skip", "Rows to Skip") Then Exit Sub
+    If Not NumOK("dcol", "Date column index") Then Exit Sub
+    If Not NumOK("tempcol", "Temperature column index") Then Exit Sub
+    If Not NumOK("lclt", "Temp LCL") Then Exit Sub
+    If Not NumOK("uclt", "Temp UCL") Then Exit Sub
+    If Not DateOK("startdt", "Start Date/Time") Then Exit Sub
+    If Not DateOK("enddt", "End Date/Time") Then Exit Sub
+
+    gSkip = CInt(V("skip"))
+    gMode = V("dmode")
+    gDateIdx = CInt(V("dcol"))
+    gTimeIdx = -1
+    If gMode = "Separated Columns" Then
+        If Not NumOK("tcol", "Time column index") Then Exit Sub
+        gTimeIdx = CInt(V("tcol"))
+    End If
+    gTempIdx = CInt(V("tempcol"))
+    gHasRH = Chk("hasrh")
+    gRhIdx = -1
+    If gHasRH Then
+        If Not NumOK("rhcol", "RH column index") Then Exit Sub
+        If Not NumOK("lclh", "Humidity LCL") Then Exit Sub
+        If Not NumOK("uclh", "Humidity UCL") Then Exit Sub
+        gRhIdx = CInt(V("rhcol"))
+        gLclH = Num(V("lclh")) : gUclH = Num(V("uclh"))
+    End If
+    gLclT = Num(V("lclt")) : gUclT = Num(V("uclt"))
+    gStart = CDbl(ParseSafe(V("startdt"))) : gEnd = CDbl(ParseSafe(V("enddt")))
+
+    gODen = Chk("oden")
+    If gODen Then
+        If Not DateOK("odstart", "Open Door Start") Then Exit Sub
+        If Not DateOK("odend", "Open Door End") Then Exit Sub
+        If Not NumOK("odrec", "Open Door recovery time") Then Exit Sub
+        gODs = CDbl(ParseSafe(V("odstart"))) : gODe = CDbl(ParseSafe(V("odend")))
+        gODrec = Num(V("odrec"))
+    End If
+    gPFen = Chk("pfen")
+    If gPFen Then
+        If Not DateOK("pfstart", "Power Failure Start") Then Exit Sub
+        If Not DateOK("pfend", "Power Failure End") Then Exit Sub
+        If Not NumOK("pfrec", "Power Failure recovery time") Then Exit Sub
+        gPFs = CDbl(ParseSafe(V("pfstart"))) : gPFe = CDbl(ParseSafe(V("pfend")))
+        gPFrec = Num(V("pfrec"))
+    End If
+
+    gOutPath = Trim(V("savepath"))
+    If gOutPath = "" Then gOutPath = fso.BuildPath(folder, "min_max_summary.xlsx")
+
+    ext = V("ext")
+    Set gFiles = CreateObject("Scripting.Dictionary")
+    For Each f In fso.GetFolder(folder).Files
+        e = LCase(fso.GetExtensionName(f.Name))
+        If (ext = "all" And (e = "xls" Or e = "xlsx" Or e = "csv")) Or e = ext Then
+            If Left(f.Name, 2) <> "~$" And LCase(f.Path) <> LCase(gOutPath) Then gFiles.Add gFiles.Count, f.Path
+        End If
+    Next
+    If gFiles.Count = 0 Then
+        MsgBox "No " & UCase(ext) & " files found in:" & vbCrLf & folder, vbCritical, "Error"
+        Exit Sub
+    End If
+
+    On Error Resume Next
+    Set gXL = CreateObject("Excel.Application")
+    If Err.Number <> 0 Then
+        MsgBox "Microsoft Excel is required (could not start it): " & Err.Description, vbCritical, "Error"
+        Err.Clear : Exit Sub
+    End If
+    On Error GoTo 0
+    gXL.Visible = False
+    gXL.DisplayAlerts = False
+    gXL.SheetsInNewWorkbook = 1
+
+    Set gMS = CreateObject("Scripting.Dictionary") : Set gOD = CreateObject("Scripting.Dictionary") : Set gPF = CreateObject("Scripting.Dictionary")
+    Set gODT = CreateObject("Scripting.Dictionary") : Set gODH = CreateObject("Scripting.Dictionary")
+    Set gPFT = CreateObject("Scripting.Dictionary") : Set gPFH = CreateObject("Scripting.Dictionary")
+
+    document.getElementById("btn").disabled = True
+    LogMsg "Processing files... Please wait."
+    gIdx = 0
+    window.setTimeout "StepNext", 50, "VBScript"
+End Sub
+
+Sub StepNext
+    If gIdx >= gFiles.Count Then
+        Finalize
+        Exit Sub
+    End If
+    Dim p : p = gFiles.Item(gIdx)
+    gIdx = gIdx + 1
+    On Error Resume Next
+    ProcessFile p
+    If Err.Number <> 0 Then
+        LogMsg "ERROR processing " & fso.GetFileName(p) & ": " & Err.Description
+        Err.Clear
+        Dim w
+        For Each w In gXL.Workbooks : w.Close False : Next
+    End If
+    On Error GoTo 0
+    window.setTimeout "StepNext", 20, "VBScript"
+End Sub
+
+Sub ProcessFile(path)
+    Dim name, wb, ws, ur, lastR, lastC, data, hdrRow, n, r, row, dts(), temps(), rhs(), d, x
+    name = fso.GetBaseName(path)
+    LogMsg "Processing " & fso.GetFileName(path) & "..."
+
+    Set wb = gXL.Workbooks.Open(path, 0, True)
+    Set ws = wb.Worksheets(1)
+    Set ur = ws.UsedRange
+    lastR = ur.Row + ur.Rows.Count - 1
+    lastC = ur.Column + ur.Columns.Count - 1
+    data = ws.Range(ws.Cells(1, 1), ws.Cells(lastR, lastC)).Value
+    wb.Close False
+
+    If Not IsArray(data) Then LogMsg "  No data found, skipped." : Exit Sub
+    hdrRow = gSkip + 1
+    If UBound(data, 1) < hdrRow + 1 Then LogMsg "  No data rows after skipping header, skipped." : Exit Sub
+    Dim maxIdx : maxIdx = gDateIdx
+    If gTimeIdx > maxIdx Then maxIdx = gTimeIdx
+    If gTempIdx > maxIdx Then maxIdx = gTempIdx
+    If gRhIdx > maxIdx Then maxIdx = gRhIdx
+    If maxIdx + 1 > UBound(data, 2) Then LogMsg "  Column index out of range, skipped." : Exit Sub
+
+    n = UBound(data, 1) - hdrRow
+    ReDim dts(n - 1) : ReDim temps(n - 1) : ReDim rhs(n - 1)
+    For r = 0 To n - 1
+        row = hdrRow + 1 + r
+        If gMode = "Separated Columns" Then
+            d = CombineDT(data(row, gDateIdx + 1), data(row, gTimeIdx + 1))
+        Else
+            d = ParseSafe(data(row, gDateIdx + 1))
+        End If
+        If Not IsEmpty(d) Then dts(r) = CDbl(d)
+        temps(r) = ToNum(data(row, gTempIdx + 1))
+        If gHasRH Then rhs(r) = ToNum(data(row, gRhIdx + 1))
+    Next
+
+    Dim tName, rName, st, c
+    tName = CStr(data(hdrRow, gTempIdx + 1))
+    If gHasRH Then rName = CStr(data(hdrRow, gRhIdx + 1))
+
+    st = Stats(dts, temps, rhs, n, gStart, gEnd)
+    AddRow gMS, Array(name, st(0), st(1), st(2), st(3), st(4), st(5), st(6))
+
+    If gODen Then
+        LogMsg "Filename: " & fso.GetFileName(path) & "... OD Start: " & V("odstart") & ", OD End: " & V("odend")
+        c = Excursions(dts, temps, n, gLclT, gUclT, gODs, gODe, gODrec, name, gODT)
+        LogMsg "Total excursions detected in channel " & tName & " in " & name & ": " & c
+        If gHasRH Then
+            c = Excursions(dts, rhs, n, gLclH, gUclH, gODs, gODe, gODrec, name, gODH)
+            LogMsg "Total excursions detected in channel " & rName & " in " & name & ": " & c
+        End If
+        st = Stats(dts, temps, rhs, n, gODs, gODe)
+        AddRow gOD, Array(name, st(0), st(1), st(2), st(3), st(4), st(5), st(6))
+    End If
+
+    If gPFen Then
+        LogMsg "Filename: " & fso.GetFileName(path) & "... PF Start: " & V("pfstart") & ", PF End: " & V("pfend")
+        c = Excursions(dts, temps, n, gLclT, gUclT, gPFs, gPFe, gPFrec, name, gPFT)
+        LogMsg "Total excursions detected in channel " & tName & " in " & name & ": " & c
+        If gHasRH Then
+            c = Excursions(dts, rhs, n, gLclH, gUclH, gPFs, gPFe, gPFrec, name, gPFH)
+            LogMsg "Total excursions detected in channel " & rName & " in " & name & ": " & c
+        End If
+        st = Stats(dts, temps, rhs, n, gPFs, gPFe)
+        AddRow gPF, Array(name, st(0), st(1), st(2), st(3), st(4), st(5), st(6))
+    End If
+End Sub
+
+Sub Finalize
+    Dim wb, idx, meta, errMsg
+    LogMsg "Writing workbook..."
+    On Error Resume Next
+
+    If gMS.Count > 0 Then AppendMetrics gMS
+    If gODen And gOD.Count > 0 Then AppendMetrics gOD
+    If gPFen And gPF.Count > 0 Then AppendMetrics gPF
+
+    Set meta = CreateObject("Scripting.Dictionary")
+    AddRow meta, Array("Start Date/Time", V("startdt"))
+    AddRow meta, Array("End Date/Time", V("enddt"))
+    AddRow meta, Array("Temperature LCL", V("lclt"))
+    AddRow meta, Array("Temperature UCL", V("uclt"))
+    If gHasRH Then
+        AddRow meta, Array("Humidity LCL", V("lclh"))
+        AddRow meta, Array("Humidity UCL", V("uclh"))
+    Else
+        AddRow meta, Array("Humidity LCL", "N/A")
+        AddRow meta, Array("Humidity UCL", "N/A")
+    End If
+    AddRow meta, Array("Open Door Start Date/Time", V("odstart"))
+    AddRow meta, Array("Open Door End Date/Time", V("odend"))
+    AddRow meta, Array("Power Failure Start Date/Time", V("pfstart"))
+    AddRow meta, Array("Power Failure End Date/Time", V("pfend"))
+
+    Set wb = gXL.Workbooks.Add
+    idx = 1
+    WriteSheet wb, idx, "Main Study Summary", SUMMARY_HDR, gMS, "" : idx = idx + 1
+    If gODen And gOD.Count > 0 Then WriteSheet wb, idx, "Open Door Challenge", SUMMARY_HDR, gOD, "" : idx = idx + 1
+    If gPFen And gPF.Count > 0 Then WriteSheet wb, idx, "Power Failure Challenge", SUMMARY_HDR, gPF, "" : idx = idx + 1
+    WriteSheet wb, idx, "OD Temp Excursions", EXC_HDR, gODT, "exc" : idx = idx + 1
+    WriteSheet wb, idx, "PF Temp Excursions", EXC_HDR, gPFT, "exc" : idx = idx + 1
+    WriteSheet wb, idx, "OD RH Excursions", EXC_HDR, gODH, "exc" : idx = idx + 1
+    WriteSheet wb, idx, "PF RH Excursions", EXC_HDR, gPFH, "exc" : idx = idx + 1
+    WriteSheet wb, idx, "Study Metadata", Array("Study Metadata", "Values"), meta, "meta"
+    wb.Worksheets(1).Activate
+
+    wb.SaveAs gOutPath, 51
+    If Err.Number <> 0 Then
+        errMsg = Err.Description
+        Err.Clear
+        wb.Close False
+        gXL.Quit : Set gXL = Nothing
+        document.getElementById("btn").disabled = False
+        MsgBox "Failed to save summary: " & errMsg & ". Permission denied or file is open in another program. Please close the file and try again.", vbCritical, "Error"
+        Exit Sub
+    End If
+    wb.Close False
+    gXL.Quit : Set gXL = Nothing
+    On Error GoTo 0
+
+    LogMsg "Ready"
+    document.getElementById("btn").disabled = False
+    MsgBox "Summary saved successfully to:" & vbCrLf & gOutPath, vbInformation, "Success"
+End Sub
+
+Sub Window_OnUnload
+    On Error Resume Next
+    If IsObject(gXL) Then
+        If Not gXL Is Nothing Then gXL.Quit
+    End If
+End Sub
+
+InitForm
+</script>
+</body>
+</html>
